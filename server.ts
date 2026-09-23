@@ -13,7 +13,6 @@ import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import dotenv from 'dotenv';
 import compression from 'compression';
-import { createServer as createViteServer } from 'vite';
 import {
   validateAndSanitizeInput,
   checkRateLimit,
@@ -316,6 +315,7 @@ app.post('/api/security-test', (req: Request, res: Response) => {
 
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
