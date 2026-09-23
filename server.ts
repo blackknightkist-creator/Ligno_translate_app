@@ -336,7 +336,9 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`LingoPro Server running at http://0.0.0.0:${PORT}`);
+    console.log(`[LingoPro] Server successfully listening at http://0.0.0.0:${PORT}`);
+    console.log(`[LingoPro] NODE_ENV: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`[LingoPro] GEMINI_API_KEY configured: ${Boolean(process.env.GEMINI_API_KEY)}`);
   });
 }
 
