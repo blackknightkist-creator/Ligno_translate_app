@@ -16,11 +16,17 @@
     <meta property="og:url" content="https://ais-pre-ow3fopkddva3lzvst6cyda-648904571630.europe-west2.run.app/" />
     <meta property="og:site_name" content="LingoPro" />
     <meta property="og:locale" content="en_US" />
+    <meta property="og:image" content="/og-image.svg" />
+    <meta property="og:image:type" content="image/svg+xml" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="LingoPro Sinhala and English Voice &amp; Professional Assistant" />
 
     <!-- Twitter/X Metadata -->
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="LingoPro — Sinhala ↔ English Voice &amp; Professional Assistant" />
     <meta name="twitter:description" content="Secure, modern Sinhala ↔ English voice and professional communication assistant with Singlish conversion, tone enhancement, and email generation." />
+    <meta name="twitter:image" content="/og-image.svg" />
 
     <!-- Schema.org Structured Data (JSON-LD) -->
     <script type="application/ld+json">
@@ -44,6 +50,13 @@
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Noto+Sans+Sinhala:wght@400;500;600;700&display=swap" rel="stylesheet">
   </head>
   <body class="bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans antialiased min-h-screen">
+    <!-- Static semantic fallback for search engine crawlers and security audit scanners prior to JS hydration -->
+    <noscript>
+      <header>
+        <h1>LingoPro — Sinhala ↔ English Voice &amp; Professional Communication Assistant</h1>
+        <p>Bilingual translation, Singlish phonetics, tone enhancement, and executive email generator powered by AI.</p>
+      </header>
+    </noscript>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

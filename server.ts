@@ -12,6 +12,7 @@
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import dotenv from 'dotenv';
+import compression from 'compression';
 import { createServer as createViteServer } from 'vite';
 import {
   validateAndSanitizeInput,
@@ -30,18 +31,59 @@ import {
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+
+// Security: Hide backend technology stack (fixes Sec-Audit finding)
+app.disable('x-powered-by');
+
+// Performance: Enable HTTP Text Compression (Gzip / Brotli)
+app.use(compression({
+  filter: (req, res) => {
+    if (req.headers['x-no-compression'] || req.headers.upgrade) {
+      return false;
+    }
+    return compression.filter(req, res);
+  }
+}));
 
 // Security: Enforce JSON body size limit (prevent denial of service via memory bloating)
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Security: HTTP Security Headers
+// Security: Comprehensive Enterprise HTTP Security Headers (OWASP & Sec-Audit Compliant)
 app.use((req: Request, res: Response, next: NextFunction) => {
+  // Prevent MIME-sniffing
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  // Legacy XSS filter
   res.setHeader('X-XSS-Protection', '1; mode=block');
+  // Referrer metadata control
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  
+  // HSTS (HTTP Strict Transport Security): 1 year + includeSubDomains + preload
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+  
+  // Permissions Policy: explicitly restrict unneeded hardware APIs while allowing microphone for STT
+  res.setHeader('Permissions-Policy', 'microphone=(self), camera=(), geolocation=(), payment=()');
+
+  // Content-Security-Policy: W3C standard defense against XSS, asset injection & clickjacking
+  // Allows framing by AI Studio preview container, Google Cloud Run, and Railway while blocking rogue origins
+  res.setHeader(
+    'Content-Security-Policy',
+    [
+      "default-src 'self'",
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https:",
+      "worker-src 'self' blob:",
+      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+      "font-src 'self' https://fonts.gstatic.com data:",
+      "img-src 'self' data: https: blob:",
+      "media-src 'self' blob: data:",
+      "connect-src 'self' https: wss: ws:",
+      "frame-ancestors 'self' https://*.google.com https://*.googleusercontent.com https://*.run.app https://*.up.railway.app https://*.railway.app",
+      "base-uri 'self'",
+      "form-action 'self'",
+    ].join('; ')
+  );
+
   next();
 });
 
@@ -280,7 +322,13 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
+    const fs = await import('fs');
+    const candidatePath1 = path.join(process.cwd(), 'dist');
+    const candidatePath2 = path.join(__dirname, 'dist');
+    const distPath = fs.existsSync(candidatePath1) 
+      ? candidatePath1 
+      : (fs.existsSync(candidatePath2) ? candidatePath2 : __dirname);
+
     app.use(express.static(distPath));
     app.get('*', (req: Request, res: Response) => {
       res.sendFile(path.join(distPath, 'index.html'));
