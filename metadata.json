@@ -1,0 +1,6 @@
+{
+  "name": "LingoPro",
+  "description": "Secure, modern Sinhala ↔ English voice and professional communication assistant with Singlish conversion, tone enhancement, and email generation.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
