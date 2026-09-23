@@ -335,11 +335,26 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const primaryServer = app.listen(PORT, '0.0.0.0', () => {
     console.log(`[LingoPro] Server successfully listening at http://0.0.0.0:${PORT}`);
     console.log(`[LingoPro] NODE_ENV: ${process.env.NODE_ENV || 'development'}`);
     console.log(`[LingoPro] GEMINI_API_KEY configured: ${Boolean(process.env.GEMINI_API_KEY)}`);
   });
+
+  // Dual-port listening guard for PaaS environments (Railway / Render / Docker)
+  // If PORT was assigned to 8080 by Railway, also bind to 3000 so the router never misses
+  if (PORT !== 3000) {
+    try {
+      const fallbackServer = app.listen(3000, '0.0.0.0', () => {
+        console.log(`[LingoPro] Also listening on port 3000 for Railway domain routing`);
+      });
+      fallbackServer.on('error', (err: any) => {
+        console.log(`[LingoPro] Note on secondary port 3000: ${err?.message || err}`);
+      });
+    } catch (_) {
+      // Ignored
+    }
+  }
 }
 
 startServer();
