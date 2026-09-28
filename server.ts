@@ -9,9 +9,9 @@
  * - Production static serving & Vite development middleware
  */
 
+import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
-import dotenv from 'dotenv';
 import compression from 'compression';
 import {
   validateAndSanitizeInput,
@@ -25,9 +25,8 @@ import {
   generateEmailService,
   transcribeAudioService,
   synthesizeSpeechService,
+  getEngineStatus,
 } from './server/aiService';
-
-dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
@@ -113,12 +112,16 @@ app.use('/api', (req: Request, res: Response, next: NextFunction) => {
 
 // Health Check & Security Diagnostics
 app.get('/api/health', (req: Request, res: Response) => {
-  const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY);
+  const engine = getEngineStatus();
   res.json({
     status: 'ok',
     service: 'LingoPro AI Assistant',
-    version: '1.0.0',
-    hasApiKey: hasGeminiKey,
+    version: '1.2.0',
+    hasApiKey: engine.geminiConfigured,
+    backupConfigured: engine.backupReady,
+    activeProvider: engine.activeProvider,
+    lastUsedProvider: engine.lastUsedProvider,
+    geminiCooldownSeconds: engine.geminiCooldownSeconds,
     timestamp: Date.now(),
   });
 });
