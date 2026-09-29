@@ -76,7 +76,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
       "img-src 'self' data: https: blob:",
       "media-src 'self' blob: data:",
       "connect-src 'self' https: wss: ws:",
-      "frame-ancestors 'self' https://*.google.com https://*.googleusercontent.com https://*.run.app https://*.up.railway.app https://*.railway.app",
+      "frame-ancestors 'self' https://*.google.com https://*.googleusercontent.com https://*.run.app https://*.up.railway.app https://*.railway.app https://*.hf.space https://*.huggingface.co",
       "base-uri 'self'",
       "form-action 'self'",
     ].join('; ')

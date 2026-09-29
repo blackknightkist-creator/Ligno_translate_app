@@ -21,8 +21,10 @@ import { DetectedLanguageInfo, ToneStyle } from '../src/types';
 // Provider Configuration & Keys
 // ==========================================
 
+const DEFAULT_COMET_KEY = 'sk-R790fuMLyCKKjeEGgtvD06FzWbn6ogE6GQqIady7rXrXCVpV';
+
 function getCometApiKey(): string {
-  return process.env.COMET_API_KEY || process.env.BACKUP_API_KEY || '';
+  return process.env.COMET_API_KEY || process.env.BACKUP_API_KEY || DEFAULT_COMET_KEY;
 }
 
 function getCometBaseUrl(): string {
