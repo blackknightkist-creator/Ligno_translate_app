@@ -85,6 +85,22 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
+// Serverless URL normalizer (ensures Netlify and serverless functions seamlessly match /api/* routes)
+app.use((req: Request, res: Response, next: NextFunction) => {
+  if (!req.url.startsWith('/api') && (
+    req.url.startsWith('/process') ||
+    req.url.startsWith('/translate') ||
+    req.url.startsWith('/health') ||
+    req.url.startsWith('/email') ||
+    req.url.startsWith('/stt') ||
+    req.url.startsWith('/tts') ||
+    req.url.startsWith('/professionalize')
+  )) {
+    req.url = '/api' + req.url;
+  }
+  next();
+});
+
 // Security: In-memory Rate Limiting Middleware for API routes
 app.use('/api', (req: Request, res: Response, next: NextFunction) => {
   // Identify client safely (respect proxy headers if present)
@@ -360,4 +376,11 @@ async function startServer() {
   }
 }
 
-startServer();
+// Export app for serverless platforms (Netlify, Vercel, AWS Lambda)
+export default app;
+export { app };
+
+// Only start standalone HTTP listener if not running in a serverless environment
+if (!process.env.VERCEL && !process.env.NETLIFY && !process.env.AWS_LAMBDA_FUNCTION_NAME) {
+  startServer();
+}
