@@ -21,10 +21,8 @@ import { DetectedLanguageInfo, ToneStyle } from '../src/types';
 // Provider Configuration & Keys
 // ==========================================
 
-const DEFAULT_COMET_KEY = 'sk-R790fuMLyCKKjeEGgtvD06FzWbn6ogE6GQqIady7rXrXCVpV';
-
 function getCometApiKey(): string {
-  return process.env.COMET_API_KEY || process.env.BACKUP_API_KEY || DEFAULT_COMET_KEY;
+  return process.env.COMET_API_KEY || process.env.BACKUP_API_KEY || '';
 }
 
 function getCometBaseUrl(): string {
@@ -36,7 +34,7 @@ let geminiClient: GoogleGenAI | null = null;
 
 function getAIClient(): GoogleGenAI | null {
   if (!geminiClient) {
-    const apiKey = process.env.GEMINI_API_KEY;
+    const apiKey = process.env.GEMINI_API_KEY || process.env.gemini_api || process.env.GEMINI_API;
     if (!apiKey) {
       return null;
     }
@@ -76,7 +74,7 @@ const QUOTA_LIMIT_COOLDOWN_MS = 5 * 60_000;
 export function getEngineStatus() {
   const now = Date.now();
   const isCooldown = geminiCooldownUntil > now;
-  const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY);
+  const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY || process.env.gemini_api || process.env.GEMINI_API);
   
   let currentActive = 'primary (Gemini)';
   if (!hasGeminiKey) {
