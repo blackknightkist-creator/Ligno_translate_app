@@ -35,7 +35,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     { id: 'professionalize', label: 'Professionalize', icon: Sparkles },
     { id: 'email', label: 'Email Generator', icon: Mail },
     { id: 'history', label: 'History', icon: History },
-    { id: 'security', label: 'Security & QA', icon: ShieldCheck },
+    ...(import.meta.env.DEV ? [{ id: 'security' as NavTab, label: 'Security & QA', icon: ShieldCheck }] : []),
     { id: 'settings', label: 'Settings', icon: Settings },
   ];
 

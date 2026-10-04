@@ -1,23 +1,50 @@
 /**
- * LingoPro Production Server
+ * LingoPro Hardened Production Server
  * Express + Vite Full-Stack Application
  * 
  * Features:
- * - Defense-in-depth security middleware
- * - Rate limiting
- * - Server-side Gemini AI orchestration
- * - Production static serving & Vite development middleware
+ * - OWASP Top 10 2026 Defense-in-depth architecture
+ * - Fail-closed NODE_ENV handling (missing NODE_ENV -> production posture; invalid NODE_ENV -> startup fail)
+ * - Rate limiting executed BEFORE body parsing to prevent pre-limiter memory exhaustion
+ * - 256kb global JSON body limit; 15mb JSON limit isolated strictly to /api/stt AFTER rate limiting
+ * - Serverless-ready (Netlify, Vercel, Docker, Railway, Cloud Run)
+ * - Strict Zod schema validation on all API endpoints
+ * - Magic-byte binary verification for audio payloads
+ * - Distributed Upstash Redis rate limiting with IPv6 /64 prefix aggregation
+ * - Trusted reverse-proxy IP resolution
+ * - Strict Content-Security-Policy (no unsafe-eval, no broad network wildcards)
+ * - Minimal public health endpoint (zero internal config leakage)
+ * - Redacted structured security logging with cryptographic request IDs
  */
 
 import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import compression from 'compression';
+import { ZodError } from 'zod';
 import {
   validateAndSanitizeInput,
   checkRateLimit,
   validateAudioPayload,
+  getClientIp,
+  generateRequestId,
+  logSecurityEvent,
 } from './server/security';
+import { evaluateRateLimit } from './server/rateLimiter';
+import {
+  validateEnvironment,
+  resolveNodeEnv,
+  isProductionEnvironment,
+  validateRateLimitEnv,
+} from './server/envValidation';
+import {
+  ProcessRequestSchema,
+  TranslateRequestSchema,
+  ProfessionalizeRequestSchema,
+  EmailRequestSchema,
+  STTRequestSchema,
+  TTSRequestSchema,
+} from './server/schemas';
 import {
   processUnifiedInput,
   translateTextService,
@@ -28,64 +55,126 @@ import {
   getEngineStatus,
 } from './server/aiService';
 
+// Extend Express Request interface to carry request ID and timing
+declare global {
+  namespace Express {
+    interface Request {
+      id?: string;
+      startTime?: number;
+    }
+  }
+}
+
+// Validate NODE_ENV and rate-limit integer environment variables immediately on module load
+// Throws and aborts startup if NODE_ENV or any RATE_LIMIT_* variable is invalid
+resolveNodeEnv(process.env.NODE_ENV);
+validateRateLimitEnv(process.env);
+
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
-// Security: Hide backend technology stack (fixes Sec-Audit finding)
+// ==========================================
+// 1. Core Platform & Reverse-Proxy Topology
+// ==========================================
+
+// Configure Express trust proxy for reverse-proxy architectures (Netlify Edge, Cloud Run, Railway)
+// Trusts the single upstream hop without blindly accepting forged client headers
+app.set('trust proxy', 1);
+
+// Disable technology disclosure header
 app.disable('x-powered-by');
 
-// Performance: Enable HTTP Text Compression (Gzip / Brotli)
+// Enable HTTP Text Compression (Gzip / Brotli)
 app.use(compression({
   filter: (req, res) => {
     if (req.headers['x-no-compression'] || req.headers.upgrade) {
       return false;
     }
     return compression.filter(req, res);
-  }
-}));
+  },
+}) as any);
 
-// Security: Enforce JSON body size limit (prevent denial of service via memory bloating)
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+// ==========================================
+// 2. Request ID & Structured Security Logging
+// ==========================================
 
-// Security: Comprehensive Enterprise HTTP Security Headers (OWASP & Sec-Audit Compliant)
 app.use((req: Request, res: Response, next: NextFunction) => {
-  // Prevent MIME-sniffing
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  // Legacy XSS filter
-  res.setHeader('X-XSS-Protection', '1; mode=block');
-  // Referrer metadata control
-  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-  
-  // HSTS (HTTP Strict Transport Security): 1 year + includeSubDomains + preload
-  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
-  
-  // Permissions Policy: explicitly restrict unneeded hardware APIs while allowing microphone for STT
-  res.setHeader('Permissions-Policy', 'microphone=(self), camera=(), geolocation=(), payment=()');
+  req.id = generateRequestId();
+  req.startTime = performance.now();
+  res.setHeader('X-Request-ID', req.id);
 
-  // Content-Security-Policy: W3C standard defense against XSS, asset injection & clickjacking
-  // Allows framing by AI Studio preview container, Google Cloud Run, and Railway while blocking rogue origins
-  res.setHeader(
-    'Content-Security-Policy',
-    [
-      "default-src 'self'",
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https:",
-      "worker-src 'self' blob:",
-      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-      "font-src 'self' https://fonts.gstatic.com data:",
-      "img-src 'self' data: https: blob:",
-      "media-src 'self' blob: data:",
-      "connect-src 'self' https: wss: ws:",
-      "frame-ancestors 'self' https://*.google.com https://*.googleusercontent.com https://*.run.app https://*.up.railway.app https://*.railway.app https://*.hf.space https://*.huggingface.co",
-      "base-uri 'self'",
-      "form-action 'self'",
-    ].join('; ')
-  );
+  res.on('finish', () => {
+    const durationMs = Math.round(performance.now() - (req.startTime || performance.now()));
+    logSecurityEvent({
+      timestamp: new Date().toISOString(),
+      requestId: req.id || 'unknown',
+      method: req.method,
+      route: req.path,
+      status: res.statusCode,
+      durationMs,
+      clientIp: getClientIp(req),
+    });
+  });
 
   next();
 });
 
-// Serverless URL normalizer (ensures Netlify and serverless functions seamlessly match /api/* routes)
+// ==========================================
+// 3. Strict HTTP Security Headers
+// ==========================================
+
+export const TRUSTED_FRAME_ANCESTORS =
+  "frame-ancestors 'self' https://aistudio.google.com https://*.google.com https://*.googleusercontent.com https://*.run.app";
+
+export function buildContentSecurityPolicy(isProd = isProductionEnvironment()): string {
+  const scriptDirectives = isProd ? "script-src 'self' blob:" : "script-src 'self' 'unsafe-inline' blob:";
+  return [
+    "default-src 'self'",
+    scriptDirectives,
+    "worker-src 'self' blob:",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com data:",
+    "img-src 'self' data: blob:",
+    "media-src 'self' blob: data:",
+    "connect-src 'self'",
+    TRUSTED_FRAME_ANCESTORS,
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+  ].join('; ');
+}
+
+app.use((req: Request, res: Response, next: NextFunction) => {
+  // Prevent MIME-sniffing
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+
+  // Referrer metadata control
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+
+  // HSTS (HTTP Strict Transport Security): 1 year + includeSubDomains + preload
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+
+  // Cross-Origin Isolation & Isolation policies
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+
+  // Permissions Policy: restrict unneeded hardware APIs while allowing microphone for STT
+  res.setHeader(
+    'Permissions-Policy',
+    'microphone=(self), camera=(), geolocation=(), payment=(), usb=(), bluetooth=()'
+  );
+
+  // Content-Security-Policy (Tightened for production; missing NODE_ENV is treated as production)
+  res.setHeader('Content-Security-Policy', buildContentSecurityPolicy(isProductionEnvironment()));
+
+  next();
+});
+
+// ==========================================
+// 4. URL Normalization & Pre-Parser Content-Type Check
+// ==========================================
+
+// Serverless URL normalizer (ensures Netlify functions seamlessly match /api/* routes before rate limiting)
 app.use((req: Request, res: Response, next: NextFunction) => {
   if (!req.url.startsWith('/api') && (
     req.url.startsWith('/process') ||
@@ -101,55 +190,136 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
-// Security: In-memory Rate Limiting Middleware for API routes
+// Enforce Content-Type: application/json on all API POST requests BEFORE rate limiting & body parsing
 app.use('/api', (req: Request, res: Response, next: NextFunction) => {
-  // Identify client safely (respect proxy headers if present)
-  const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown-client';
-  
-  // High-volume limit: 60 requests/minute for light endpoints, 25/minute for heavy AI
-  const isHeavyAi = ['/process', '/translate', '/professionalize', '/email', '/stt'].some(path => req.path.startsWith(path));
-  const limit = isHeavyAi ? 25 : 60;
-
-  const rateCheck = checkRateLimit(clientIp, limit, 60 * 1000);
-  if (!rateCheck.allowed) {
-    res.setHeader('Retry-After', rateCheck.retryAfterSec || 30);
-    return res.status(429).json({
-      error: 'Too many requests. Please try again shortly.',
-      retryAfter: rateCheck.retryAfterSec,
-    });
+  if (req.method === 'POST' && req.path !== '/health') {
+    const contentType = req.headers['content-type'] || '';
+    if (!contentType.toLowerCase().includes('application/json')) {
+      return res.status(415).json({
+        error: 'Unsupported Media Type. Requests must provide Content-Type: application/json',
+        requestId: req.id,
+      });
+    }
   }
-
   next();
 });
 
 // ==========================================
-// API Routes
+// 5. Production Distributed Rate Limiting Middleware (Runs BEFORE Body Parsing)
 // ==========================================
 
-// Health Check & Security Diagnostics
+app.use('/api', async (req: Request, res: Response, next: NextFunction) => {
+  const clientIp = getClientIp(req);
+
+  // Differentiated functional tiers:
+  // - STT: Audio transcription/synthesis
+  // - Heavy AI: LLM inference (process, translate, professionalize, email)
+  // - Standard: Health and non-AI endpoints
+  let tier: 'ai' | 'stt' | 'standard' = 'standard';
+  if (req.path.startsWith('/stt') || req.path.startsWith('/tts')) {
+    tier = 'stt';
+  } else if (['/process', '/translate', '/professionalize', '/email'].some(p => req.path.startsWith(p))) {
+    tier = 'ai';
+  }
+
+  try {
+    const rateCheck = await evaluateRateLimit(clientIp, tier);
+
+    res.setHeader('RateLimit-Limit', rateCheck.limit);
+    res.setHeader('RateLimit-Remaining', rateCheck.remaining);
+    res.setHeader('RateLimit-Policy', `${rateCheck.limit};w=60`);
+
+    if (!rateCheck.allowed) {
+      if (
+        rateCheck.reason === 'REDIS_CONFIGURATION_REQUIRED' ||
+        rateCheck.reason === 'REDIS_UNAVAILABLE'
+      ) {
+        res.setHeader('Retry-After', rateCheck.retryAfterSec || 60);
+        return res.status(503).json({
+          error:
+            rateCheck.reason === 'REDIS_UNAVAILABLE'
+              ? 'Rate limiting service temporarily unavailable. Request rejected by fail-closed security policy.'
+              : 'Rate limiting service unconfigured in production. Distributed Upstash Redis store required.',
+          requestId: req.id,
+        });
+      }
+
+      res.setHeader('Retry-After', rateCheck.retryAfterSec || 30);
+      return res.status(429).json({
+        error: rateCheck.reason === 'DAILY_QUOTA_EXCEEDED'
+          ? 'Daily request allowance reached for this client. Please resume tomorrow.'
+          : 'Too many requests. Please slow down and try again shortly.',
+        retryAfter: rateCheck.retryAfterSec,
+        requestId: req.id,
+      });
+    }
+
+    next();
+  } catch (err) {
+    console.error('[RateLimiter] Middleware unhandled error:', (err as Error)?.message || err);
+    if (isProductionEnvironment()) {
+      res.setHeader('Retry-After', 60);
+      return res.status(503).json({
+        error: 'Rate limiting service unavailable. Request rejected by fail-closed security policy.',
+        requestId: req.id,
+      });
+    }
+    next();
+  }
+});
+
+// ==========================================
+// 6. Scoped Body Parsing (Executed AFTER Rate Limiting)
+// ==========================================
+
+export const GLOBAL_JSON_BODY_LIMIT = '256kb';
+export const STT_AUDIO_JSON_BODY_LIMIT = '15mb';
+
+const standardJsonParser = express.json({ limit: GLOBAL_JSON_BODY_LIMIT });
+const sttAudioJsonParser = express.json({ limit: STT_AUDIO_JSON_BODY_LIMIT });
+
+// Apply 15MB parser strictly to /api/stt; apply 256KB parser to all other routes
+app.use((req: Request, res: Response, next: NextFunction) => {
+  if (req.path === '/api/stt' || req.url.startsWith('/api/stt')) {
+    return sttAudioJsonParser(req, res, next);
+  }
+  return standardJsonParser(req, res, next);
+});
+app.use(express.urlencoded({ extended: false, limit: '64kb' }));
+
+// ==========================================
+// 7. Hardened API Routes
+// ==========================================
+
+// Minimal Public Health Endpoint (Zero sensitive internal configuration leakage)
 app.get('/api/health', (req: Request, res: Response) => {
+  res.json({
+    status: 'ok',
+    timestamp: Date.now(),
+  });
+});
+
+// Internal Health Endpoint (Available ONLY in explicit development/test environments)
+app.get('/api/internal/health', (req: Request, res: Response) => {
+  if (isProductionEnvironment()) {
+    return res.status(404).json({ error: 'Endpoint unavailable in production', requestId: req.id });
+  }
   const engine = getEngineStatus();
   res.json({
     status: 'ok',
-    service: 'LingoPro AI Assistant',
-    version: '1.2.0',
-    hasApiKey: engine.geminiConfigured,
-    backupConfigured: engine.backupReady,
-    activeProvider: engine.activeProvider,
-    lastUsedProvider: engine.lastUsedProvider,
-    geminiCooldownSeconds: engine.geminiCooldownSeconds,
+    engine,
     timestamp: Date.now(),
   });
 });
 
 // Unified Processing (Auto-detect -> Translate -> Professionalize)
-app.post('/api/process', async (req: Request, res: Response) => {
+app.post('/api/process', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { text } = req.body;
-    const validation = validateAndSanitizeInput(text, { maxLength: 5000 });
+    const parsed = ProcessRequestSchema.parse(req.body);
+    const validation = validateAndSanitizeInput(parsed.text, { maxLength: 5000 });
 
     if (!validation.valid) {
-      return res.status(400).json({ error: validation.error, flags: validation.flags });
+      return res.status(400).json({ error: validation.error, flags: validation.flags, requestId: req.id });
     }
 
     const result = await processUnifiedInput(validation.sanitized, validation.flags);
@@ -158,149 +328,119 @@ app.post('/api/process', async (req: Request, res: Response) => {
       data: result,
       securityFlags: validation.flags,
     });
-  } catch (error: any) {
-    console.error('[API /process error]:', error?.message || error);
-    res.status(500).json({
-      error: 'Sorry, I could not process that request. Please try again.',
-      details: process.env.NODE_ENV === 'development' ? error?.message : undefined,
-    });
+  } catch (error) {
+    next(error);
   }
 });
 
 // Dedicated Translation Endpoint
-app.post('/api/translate', async (req: Request, res: Response) => {
+app.post('/api/translate', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { text, targetLang } = req.body;
-    const validation = validateAndSanitizeInput(text, { maxLength: 5000 });
+    const parsed = TranslateRequestSchema.parse(req.body);
+    const validation = validateAndSanitizeInput(parsed.text, { maxLength: 5000 });
 
     if (!validation.valid) {
-      return res.status(400).json({ error: validation.error, flags: validation.flags });
+      return res.status(400).json({ error: validation.error, flags: validation.flags, requestId: req.id });
     }
 
-    const safeTarget = targetLang === 'si' || targetLang === 'en' ? targetLang : 'auto';
-    const result = await translateTextService(validation.sanitized, safeTarget);
-
+    const result = await translateTextService(validation.sanitized, parsed.targetLang);
     res.json({
       success: true,
       data: result,
       securityFlags: validation.flags,
     });
-  } catch (error: any) {
-    console.error('[API /translate error]:', error?.message || error);
-    res.status(500).json({
-      error: 'Sorry, I could not translate that text. Please try again.',
-    });
+  } catch (error) {
+    next(error);
   }
 });
 
 // Dedicated Professionalization Endpoint
-app.post('/api/professionalize', async (req: Request, res: Response) => {
+app.post('/api/professionalize', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { text, style } = req.body;
-    const validation = validateAndSanitizeInput(text, { maxLength: 5000 });
+    const parsed = ProfessionalizeRequestSchema.parse(req.body);
+    const validation = validateAndSanitizeInput(parsed.text, { maxLength: 5000 });
 
     if (!validation.valid) {
-      return res.status(400).json({ error: validation.error, flags: validation.flags });
+      return res.status(400).json({ error: validation.error, flags: validation.flags, requestId: req.id });
     }
 
-    const validStyles = ['natural', 'friendly', 'professional', 'formal', 'executive', 'short'];
-    const safeStyle = validStyles.includes(style) ? style : 'professional';
-
-    const result = await professionalizeTextService(validation.sanitized, safeStyle);
+    const result = await professionalizeTextService(validation.sanitized, parsed.style);
     res.json({
       success: true,
       data: result,
       securityFlags: validation.flags,
     });
-  } catch (error: any) {
-    console.error('[API /professionalize error]:', error?.message || error);
-    res.status(500).json({
-      error: 'Sorry, I could not improve that text. Please try again.',
-    });
+  } catch (error) {
+    next(error);
   }
 });
 
-// Dedicated Email Generator Endpoint
-app.post('/api/email', async (req: Request, res: Response) => {
+// Dedicated Email Generator Endpoint (Enforces strict allowlists for style and recipientRole)
+app.post('/api/email', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { request, style, recipientRole } = req.body;
-    const validation = validateAndSanitizeInput(request, { maxLength: 5000 });
+    const parsed = EmailRequestSchema.parse(req.body);
+    const validation = validateAndSanitizeInput(parsed.request, { maxLength: 5000 });
 
     if (!validation.valid) {
-      return res.status(400).json({ error: validation.error, flags: validation.flags });
+      return res.status(400).json({ error: validation.error, flags: validation.flags, requestId: req.id });
     }
 
-    const validStyles = ['natural', 'friendly', 'professional', 'formal', 'executive', 'short'];
-    const safeStyle = validStyles.includes(style) ? style : 'professional';
-
-    const result = await generateEmailService(validation.sanitized, safeStyle, recipientRole);
+    const result = await generateEmailService(validation.sanitized, parsed.style, parsed.recipientRole);
     res.json({
       success: true,
       data: result,
       securityFlags: validation.flags,
     });
-  } catch (error: any) {
-    console.error('[API /email error]:', error?.message || error);
-    res.status(500).json({
-      error: 'Sorry, I could not generate the email. Please try again.',
-    });
+  } catch (error) {
+    next(error);
   }
 });
 
-// Speech-to-Text Endpoint (Accepts base64 audio and transcribes via Gemini)
-app.post('/api/stt', async (req: Request, res: Response) => {
+// Speech-to-Text Endpoint (Strict Base64 and Audio Magic-Byte Verification; 15MB body parser allowed)
+app.post('/api/stt', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { audioData, mimeType } = req.body;
-    const payloadValidation = validateAudioPayload(audioData);
+    const parsed = STTRequestSchema.parse(req.body);
+    const payloadValidation = validateAudioPayload(parsed.audioData, parsed.mimeType);
 
     if (!payloadValidation.valid) {
-      return res.status(400).json({ error: payloadValidation.error });
+      return res.status(400).json({ error: payloadValidation.error, requestId: req.id });
     }
 
-    const rawMimeType = typeof mimeType === 'string' && mimeType.startsWith('audio/') 
-      ? mimeType 
-      : 'audio/webm';
-    const safeMimeType = rawMimeType.split(';')[0].trim();
-
-    const result = await transcribeAudioService(audioData, safeMimeType);
+    const result = await transcribeAudioService(parsed.audioData, payloadValidation.safeMimeType || 'audio/webm');
     res.json({
       success: true,
       data: result,
     });
-  } catch (error: any) {
-    console.error('[API /stt error]:', error?.message || error);
-    const msg = String(error?.message || '');
-    const isHighDemand = error?.status === 503 || msg.includes('503') || msg.includes('high demand') || msg.includes('UNAVAILABLE');
-    res.status(isHighDemand ? 503 : 500).json({
-      error: isHighDemand
-        ? 'Speech recognition service is experiencing high traffic. Please try speaking again in a few moments or use text input.'
-        : 'Failed to transcribe audio. You may also speak using browser speech recognition or type your message.',
-    });
+  } catch (error) {
+    next(error);
   }
 });
 
 // Text-to-Speech Endpoint
-app.post('/api/tts', async (req: Request, res: Response) => {
+app.post('/api/tts', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { text, voice } = req.body;
-    const validation = validateAndSanitizeInput(text, { maxLength: 600 });
+    const parsed = TTSRequestSchema.parse(req.body);
+    const validation = validateAndSanitizeInput(parsed.text, { maxLength: 600 });
 
     if (!validation.valid) {
-      return res.status(400).json({ error: validation.error });
+      return res.status(400).json({ error: validation.error, requestId: req.id });
     }
 
-    const result = await synthesizeSpeechService(validation.sanitized, voice);
+    const result = await synthesizeSpeechService(validation.sanitized, parsed.voice);
     res.json(result);
-  } catch (error: any) {
-    console.error('[API /tts error]:', error?.message || error);
-    res.json({ success: false, fallbackToBrowser: true });
+  } catch (error) {
+    next(error);
   }
 });
 
-// Security & Functional Diagnostic Runner Endpoint
-app.post('/api/security-test', (req: Request, res: Response) => {
-  const { testType, payload } = req.body;
-  
+// Diagnostic endpoint: Strictly disabled in production (including when NODE_ENV is unset/missing)
+app.all('/api/security-test', (req: Request, res: Response) => {
+  if (isProductionEnvironment() || req.method !== 'POST') {
+    return res.status(404).json({ error: 'Endpoint unavailable in production', requestId: req.id });
+  }
+
+  const { testType, payload } = req.body || {};
+
   if (testType === 'input_validation') {
     const result = validateAndSanitizeInput(payload);
     return res.json({
@@ -313,7 +453,7 @@ app.post('/api/security-test', (req: Request, res: Response) => {
   }
 
   if (testType === 'rate_limit_probe') {
-    const testIp = 'test-client-sandbox-' + Date.now();
+    const testIp = '198.51.100.' + (Math.floor(Math.random() * 200) + 1);
     const probeResults = [];
     for (let i = 0; i < 5; i++) {
       probeResults.push(checkRateLimit(testIp, 3, 10000));
@@ -325,15 +465,77 @@ app.post('/api/security-test', (req: Request, res: Response) => {
     });
   }
 
-  res.json({ status: 'unknown_test' });
+  return res.json({ status: 'unknown_test' });
 });
 
 // ==========================================
-// Vite Middleware & Static Serving Setup
+// 8. Centralized Error Handling Middleware
+// ==========================================
+
+app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
+  // Handle Zod schema validation errors cleanly with HTTP 400
+  if (err instanceof ZodError) {
+    const firstIssue = err.issues[0];
+    const message = firstIssue 
+      ? `${firstIssue.path.join('.') || 'body'}: ${firstIssue.message}` 
+      : 'Invalid request payload';
+    return res.status(400).json({
+      error: message,
+      requestId: req.id,
+    });
+  }
+
+  // Handle payload too large errors
+  if (err?.type === 'entity.too.large' || err?.status === 413) {
+    return res.status(413).json({
+      error: 'Payload Too Large. Please reduce request payload size.',
+      requestId: req.id,
+    });
+  }
+
+  // Handle malformed JSON syntax errors
+  if (err instanceof SyntaxError && 'status' in err && (err as any).status === 400) {
+    return res.status(400).json({
+      error: 'Malformed JSON payload.',
+      requestId: req.id,
+    });
+  }
+
+  // Handle transient upstream provider errors
+  const status = err?.status || err?.code;
+  const msg = String(err?.message || '');
+  const isHighDemand = status === 503 || msg.includes('503') || msg.includes('high demand') || msg.includes('UNAVAILABLE');
+
+  if (isHighDemand) {
+    return res.status(503).json({
+      error: 'Service temporarily under high demand. Please try again shortly.',
+      requestId: req.id,
+    });
+  }
+
+  // Server-side logging without leaking secrets or user data
+  console.error(`[Server Error][${req.id}] ${err?.name || 'Error'}: ${err?.message || 'Unexpected failure'}`);
+
+  // Only return detailed error messages in explicit development mode
+  const isExplicitDev = resolveNodeEnv(process.env.NODE_ENV) === 'development';
+  res.status(500).json({
+    error: isExplicitDev ? err?.message || 'Internal Server Error' : 'Unable to process the request.',
+    requestId: req.id,
+  });
+});
+
+// ==========================================
+// 9. Vite & Static Serving Configuration
 // ==========================================
 
 async function startServer() {
-  if (process.env.NODE_ENV !== 'production') {
+  // Startup environment & security configuration verification (throws on invalid NODE_ENV or RATE_LIMIT_*)
+  validateEnvironment({ throwOnFatal: true });
+
+  const resolvedEnv = resolveNodeEnv(process.env.NODE_ENV);
+
+  // Vite dev middleware is enabled ONLY when NODE_ENV is explicitly 'development' or 'test'
+  if (resolvedEnv === 'development' || resolvedEnv === 'test') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -354,33 +556,16 @@ async function startServer() {
     });
   }
 
-  const primaryServer = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[LingoPro] Server successfully listening at http://0.0.0.0:${PORT}`);
-    console.log(`[LingoPro] NODE_ENV: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`[LingoPro] GEMINI_API_KEY configured: ${Boolean(process.env.GEMINI_API_KEY)}`);
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`[LingoPro] Server listening at http://0.0.0.0:${PORT} (${resolvedEnv})`);
   });
-
-  // Dual-port listening guard for PaaS environments (Railway / Render / Docker)
-  // If PORT was assigned to 8080 by Railway, also bind to 3000 so the router never misses
-  if (PORT !== 3000) {
-    try {
-      const fallbackServer = app.listen(3000, '0.0.0.0', () => {
-        console.log(`[LingoPro] Also listening on port 3000 for Railway domain routing`);
-      });
-      fallbackServer.on('error', (err: any) => {
-        console.log(`[LingoPro] Note on secondary port 3000: ${err?.message || err}`);
-      });
-    } catch (_) {
-      // Ignored
-    }
-  }
 }
 
-// Export app for serverless platforms (Netlify, Vercel, AWS Lambda)
+// Export app for serverless platforms (Netlify Functions, Vercel, AWS Lambda)
 export default app;
 export { app };
 
-// Only start standalone HTTP listener if not running in a serverless environment
+// Start standalone HTTP listener if not running in a serverless environment
 if (!process.env.VERCEL && !process.env.NETLIFY && !process.env.AWS_LAMBDA_FUNCTION_NAME) {
   startServer();
 }

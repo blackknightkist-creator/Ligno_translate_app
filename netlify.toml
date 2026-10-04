@@ -3,11 +3,15 @@
   publish = "dist"
   functions = "netlify/functions"
 
-[build.environment]
-  SECRETS_SCAN_ENABLED = "false"
-
 [functions]
   node_bundler = "esbuild"
+
+# Block direct access to node server bundle from static public
+[[redirects]]
+  from = "/server.cjs"
+  to = "/index.html"
+  status = 404
+  force = true
 
 # Route API requests to the Express serverless function
 [[redirects]]
@@ -20,3 +24,15 @@
   from = "/*"
   to = "/index.html"
   status = 200
+
+# Enterprise Security Headers on all Netlify responses
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Strict-Transport-Security = "max-age=31536000; includeSubDomains; preload"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "microphone=(self), camera=(), geolocation=(), payment=(), usb=(), bluetooth=()"
+    Cross-Origin-Opener-Policy = "same-origin-allow-popups"
+    Cross-Origin-Resource-Policy = "same-origin"
+    Content-Security-Policy = "default-src 'self'; script-src 'self' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; media-src 'self' blob: data:; connect-src 'self'; frame-ancestors 'self' https://aistudio.google.com https://*.google.com https://*.googleusercontent.com https://*.run.app; object-src 'none'; base-uri 'self'; form-action 'self'"

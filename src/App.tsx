@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense } from 'react';
 import { Navbar, NavTab } from './components/Navbar';
 import { HomeAssistant } from './components/HomeAssistant';
 import { TranslateView } from './components/TranslateView';
@@ -6,9 +6,16 @@ import { ProfessionalizeView } from './components/ProfessionalizeView';
 import { EmailView } from './components/EmailView';
 import { HistoryView } from './components/HistoryView';
 import { SettingsView } from './components/SettingsView';
-import { SecurityTestSuite } from './components/SecurityTestSuite';
 import { HistoryItem } from './types';
-import { ShieldCheck, Heart, Sparkles, Terminal } from 'lucide-react';
+import { ShieldCheck, Terminal } from 'lucide-react';
+
+const DevSecurityTestSuite = React.lazy(() =>
+  import.meta.env.DEV
+    ? import('./components/SecurityTestSuite').then((m) => ({
+        default: m.SecurityTestSuite,
+      }))
+    : Promise.resolve({ default: () => null })
+);
 
 export default function App() {
   const [currentTab, setCurrentTab] = useState<NavTab>('home');
@@ -126,8 +133,10 @@ export default function App() {
           <HistoryView onReuseItem={handleReuseHistoryItem} />
         )}
 
-        {currentTab === 'security' && (
-          <SecurityTestSuite />
+        {import.meta.env.DEV && currentTab === 'security' && DevSecurityTestSuite && (
+          <Suspense fallback={<div className="p-8 text-center text-xs text-slate-500">Loading Security &amp; QA Suite...</div>}>
+            <DevSecurityTestSuite />
+          </Suspense>
         )}
 
         {currentTab === 'settings' && (
@@ -154,14 +163,18 @@ export default function App() {
             </span>
             <span>•</span>
             <span>Sinhala Unicode Standard Compliant</span>
-            <span>•</span>
-            <button
-              onClick={() => setCurrentTab('security')}
-              className="text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1"
-            >
-              <Terminal className="w-3 h-3" />
-              <span>QA &amp; Security Lab</span>
-            </button>
+            {import.meta.env.DEV && (
+              <>
+                <span>•</span>
+                <button
+                  onClick={() => setCurrentTab('security')}
+                  className="text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1"
+                >
+                  <Terminal className="w-3 h-3" />
+                  <span>QA &amp; Security Lab</span>
+                </button>
+              </>
+            )}
           </div>
         </div>
       </footer>

@@ -1,0 +1,43 @@
+name: LingoPro Security & CI Verification
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+permissions:
+  contents: read
+
+jobs:
+  security-verify:
+    name: Clean Install, Audit, Lint, Test & Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Clean Dependency Installation
+        run: npm ci
+
+      - name: Dependency Security Audit
+        run: npm audit --audit-level=high
+
+      - name: TypeScript Lint Verification
+        run: npm run lint
+
+      - name: Security Regression Suite
+        env:
+          NODE_ENV: test
+        run: npm test
+
+      - name: Production Bundle & Server Build
+        env:
+          NODE_ENV: production
+        run: npm run build
