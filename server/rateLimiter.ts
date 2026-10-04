@@ -59,16 +59,54 @@ export function resetRedisClientForTesting(): void {
   redisInitError = null;
 }
 
+/**
+ * Resolves Upstash Redis REST URL and Token from environment variables.
+ * Supports standard UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN as well as
+ * common case variations or accidental surrounding quotes in hosting dashboards.
+ */
+function stripWrappingQuotes(val: string): string {
+  const trimmed = val.trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+export function resolveRedisCredentials(envObj: NodeJS.ProcessEnv = process.env): {
+  url: string;
+  token: string;
+} {
+  const rawUrl =
+    envObj.UPSTASH_REDIS_REST_URL ||
+    envObj.upstash_redis_rest_url ||
+    envObj.KV_REST_API_URL ||
+    envObj.REDIS_REST_URL ||
+    '';
+  const rawToken =
+    envObj.UPSTASH_REDIS_REST_TOKEN ||
+    envObj.upstash_redis_rest_token ||
+    envObj.KV_REST_API_TOKEN ||
+    envObj.REDIS_REST_TOKEN ||
+    '';
+
+  return {
+    url: stripWrappingQuotes(rawUrl),
+    token: stripWrappingQuotes(rawToken),
+  };
+}
+
 export function getRedisClient(): Redis | null {
-  if (redisInitAttempted) {
+  if (redisClient) {
     return redisClient;
   }
-  redisInitAttempted = true;
 
-  const url = process.env.UPSTASH_REDIS_REST_URL?.trim();
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN?.trim();
+  const { url, token } = resolveRedisCredentials(process.env);
 
   if (url && token) {
+    redisInitAttempted = true;
     try {
       redisClient = new Redis({ url, token });
       redisInitError = null;
@@ -77,6 +115,8 @@ export function getRedisClient(): Redis | null {
       console.error('[RateLimiter] Failed to initialize Upstash Redis client:', redisInitError);
       redisClient = null;
     }
+  } else {
+    redisInitAttempted = false;
   }
 
   return redisClient;

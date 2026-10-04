@@ -209,6 +209,11 @@ app.use('/api', (req: Request, res: Response, next: NextFunction) => {
 // ==========================================
 
 app.use('/api', async (req: Request, res: Response, next: NextFunction) => {
+  // Public health probe is a lightweight status check and does not consume AI/STT resources
+  if (req.method === 'GET' && (req.path === '/health' || req.path === '/api/health')) {
+    return next();
+  }
+
   const clientIp = getClientIp(req);
 
   // Differentiated functional tiers:
