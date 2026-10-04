@@ -698,6 +698,22 @@ async function runRegressionTests() {
     );
   });
 
+  // Test package.json & package-lock.json registry resolution integrity (no @types/node@26.6.4 or missing resolved URLs)
+  const pkgJson = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), 'package.json'), 'utf-8'));
+  const pkgLock = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), 'package-lock.json'), 'utf-8'));
+  const typesNodeSpec = pkgJson.dependencies?.['@types/node'] || pkgJson.devDependencies?.['@types/node'];
+  const lockedTypesNode = pkgLock.packages?.['node_modules/@types/node'];
+  const missingResolvedCount = Object.entries(pkgLock.packages || {}).filter(
+    ([k, v]: [string, any]) => k !== '' && !v.resolved && !v.link
+  ).length;
+  assert(
+    typesNodeSpec === '^22.20.5' &&
+      lockedTypesNode?.version === '22.20.5' &&
+      Boolean(lockedTypesNode?.resolved?.includes('registry.npmjs.org/@types/node/-/node-22.20.5.tgz')) &&
+      missingResolvedCount === 0,
+    'package.json and package-lock.json have valid @types/node@22.20.5 and 100% resolved tarball URLs for Netlify CI'
+  );
+
   console.log(`\nRegression Suite Complete: ${passed} Passed, ${failed} Failed.`);
   process.exit(failed > 0 ? 1 : 0);
 }
